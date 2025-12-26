@@ -1,1 +1,180 @@
-111
+МІНІСТЕРСТВО ОСВІТИ І НАУКИ УКРАЇНИ
+ 
+ХАРКІВСЬКИЙ НАЦІОНАЛЬНИЙ
+УНІВЕРСИТЕТ РАДІОЕЛЕКТРОНІКИ
+ 
+Кафедра «Програмна інженерія»
+ 
+ 
+
+
+
+
+ЗВІТ
+Дисципліна «Аналіз та рефакторинг коду»
+Лабораторна робота №4
+«РОЗРОБКА IoT КЛІЄНТА »
+
+
+
+
+
+
+
+
+
+
+ 
+Виконав:                                                                                         Прийняв:
+ст. гр. ПЗПІ-23-10                                                                        Дашенков Д.С.
+Бєлікова М. С.
+
+
+
+
+
+
+
+
+Харків 2025
+
+
+Мета роботи: потрібно розробити програмне забезпечення для  IoT або SmartDevice пристрою, створеного на базі будь-якої поширеної на  сьогодні платформи, придатної для реалізації вбудованих систем (Embedded  System). 
+Тема роботи: Програмна система для моніторингу громадського дорожнього руху 
+
+Посилання на відеозапис: https://youtu.be/aPYtZf3UpBk
+Посилання на репозиторій: https://github.com/NureBielikovaMaryna/ark-pzpi-23-10-bielikova-maryna
+
+Хід роботи
+1. Текстовий опис інженерних рішень
+Для реалізації ІоТ-клієнта було обрано платформу ESP32, оскільки вона має вбудований Wi-Fi модуль та достатньо потужності для роботи з протоколом HTTPS.
+Інженерні рішення:
+* Протокол передачі даних: Використано HTTP POST, що є стандартом для передачі стану датчиків на сервер.
+* Безпека: Використано бібліотеку WiFiClientSecure з налаштуванням setInsecure() для роботи з ngrok без необхідності постійного оновлення SSL-сертифікатів у пам'яті мікроконтролера.
+* Синхронізація часу: Для точності даних використано протокол NTP (Network Time Protocol). Клієнт самостійно отримує актуальний час, що дозволяє серверу точніше розраховувати затримку поїзда.
+* Обхід обмежень: Додано спеціальні HTTP-заголовки (ngrok-skip-browser-warning), що дозволяє автоматизованому пристрою проходити через захисні сторінки ngrok.
+2. Графічні ілюстрації (UML діаграми)
+UML Діаграма прецедентів (Use Case)
+Ця діаграма описує основні функції, які виконує ІоТ-клієнт.
+Опис акторів:
+* ІоТ-пристрій (ESP32): Головний виконавець.
+* Сервер (Web API): Приймає дані.
+* NTP Сервер: Надає точний час.
+  
+
+рис 1 - UML Діаграма прецедентів
+UML Діаграма діяльності (Activity Diagram)
+Описує логіку роботи програми від моменту ввімкнення.
+  
+
+рис 2 - Activity Diagram
+3. Фрагменти програмного коду
+А. Налаштування ІоТ клієнта (Setup)
+Цей блок відповідає за ініціалізацію периферії та зв'язку.
+void setup() {
+  Serial.begin(115200);
+  pinMode(sensorPin, INPUT_PULLUP); // Налаштування піна датчика
+
+
+  // Підключення до мережі
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+
+  // Налаштування часового поясу (Київ)
+  configTime(7200, 3600, "pool.ntp.org"); 
+}
+Б. Бізнес-логіка ІоТ клієнта (Математична обробка та підготовка даних)
+Логіка полягає у зчитуванні сигналу, отриманні часу та формуванні URL-запиту.
+void sendData() {
+  // 1. Формування мітки часу
+  struct tm timeinfo;
+  getLocalTime(&timeinfo);
+  char timeString[6];
+  strftime(timeString, 6, "%H:%M", &timeinfo);
+
+
+  // 2. Бізнес-логіка: Формування параметризованого запиту
+  // Об'єднання ID поїзда, ID станції та реального часу прибуття
+  String url = String(serverUrl) + "?trainId=1&stationId=2&actualTime=" + timeString;
+  
+  // 3. Відправка та обробка відповіді
+  if (http.begin(*client, url)) {
+    int httpResponseCode = http.POST(""); 
+    if (httpResponseCode == 200) {
+      Serial.println("Success: " + http.getString());
+    }
+  }
+}
+
+
+В. Бізнес-логіка обробки даних на стороні сервера (Математична обробка):
+
+
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using WebApplication1.Data;
+namespace WebApplication1.Controllers
+{
+    [Route("api/[controller]")]
+    [ApiController]
+    public class SensorController : ControllerBase
+    {
+        private readonly AppDbContext _context;
+        public SensorController(AppDbContext context) => _context = context;
+
+
+        // обн где знах поезд
+        
+        [HttpPost("update")]
+        public async Task<IActionResult> UpdateLocation(
+    [FromQuery] int trainId,
+    [FromQuery] int stationId,
+    [FromQuery] string actualTime)
+        {
+             
+            var train = await _context.Trains
+                .Include(t => t.Route)
+                .FirstOrDefaultAsync(t => t.Id == trainId);
+
+
+            if (train == null) return NotFound("Поїзд не знайдено");
+
+
+            // поиск в распис станц
+            var schedule = train.Route.FirstOrDefault(rs => rs.StationId == stationId);
+
+
+            if (schedule != null)
+            {
+                train.CurrentStationId = stationId; //местопол
+
+
+                // задержка мат
+                if (TimeSpan.TryParse(actualTime, out var tActual) &&
+                    TimeSpan.TryParse(schedule.ScheduledArrival, out var tScheduled))
+                {
+                    int delay = (int)(tActual - tScheduled).TotalMinutes;
+                    train.DelayMinutes = delay > 0 ? delay : 0;
+                }
+            }
+
+
+            await _context.SaveChangesAsync();
+            return Ok(new
+            {
+                status = "Дані отримано від датчика",
+                train = train.Number,
+                delay = train.DelayMinutes
+            });
+        }
+    }
+}
+
+
+
+
+Висновок:В якості інженерного рішення обрано архітектуру 'Тонкий клієнт'. ІоТ-пристрій виконує роль збирача даних: він фіксує точний час події за допомогою протоколу NTP та передає його на Web API через шифрований канал (HTTPS/ngrok). Вся складна математична логіка (пошук розкладу, розрахунок затримки та оновлення бази даних SQLite) винесена на сервер, що дозволяє економити ресурси мікроконтролера та забезпечує централізоване зберігання даних.
